@@ -43,6 +43,7 @@ export interface AccessibleSliderOptions {
     dot?: string;
     active?: string;
     pause?: string;
+    status?: string;
   };
   lang?: Lang;
   labels?: Partial<(typeof defaultLabels)["ja"]>;
@@ -53,6 +54,8 @@ export interface AccessibleSliderOptions {
 }
 
 export class AccessibleSlider {
+  // 1. プロパティ定義
+  // -------------------------------------------------------------
   root: HTMLElement;
   options: AccessibleSliderOptions;
   originalOptions: AccessibleSliderOptions;
@@ -62,14 +65,19 @@ export class AccessibleSlider {
   dotsContainer?: HTMLElement;
   autoplayTimer?: ReturnType<typeof setInterval>;
   isPaused: boolean = false;
+  pauseButton?: HTMLButtonElement;
 
+
+  // 2. コンストラクター
+  // -------------------------------------------------------------
   constructor(root: HTMLElement, options: AccessibleSliderOptions = {}) {
     this.root = root;
     this.options = { ...options };
     this.originalOptions = { ...this.options };
-    this.updateOptionsForCurrentBreakpoint();
-    this.init();
+    this.updateOptionsForCurrentBreakpoint(); // 初期化の一部
+    this.init(); // 全体の初期化処理を呼び出す
 
+    // リサイズイベントのリスナーは、クラスの外部との主要な接点なので、コンストラクタの最後に置く
     window.addEventListener(
       "resize",
       debounce(() => {
@@ -79,27 +87,116 @@ export class AccessibleSlider {
     );
   }
 
+
+  // 3. パブリックAPI (外部から直接呼び出される主要メソッド)
+  // -------------------------------------------------------------
+
   public init() {
+    // コンポーネントの初期化フロー全体を制御
     this.setupTrack();
     this.setupAria();
     this.setupNav();
     this.setupDots();
     this.setupAutoplay();
     this.updateSliderSize();
+
+    // 全体のA11y属性とキーボードナビゲーションの追加
+    this.root.setAttribute("tabindex", "0");
+    this.root.setAttribute("role", "region");
+    this.root.setAttribute(
+      "aria-label",
+      getLabel("regionLabel", {
+        lang: this.options.lang,
+        override: this.options.labels,
+      })
+    );
+    this.addKeyboardNavigation();
+
+    this.updateSlideStatusAnnouncement();
   }
 
-  private getClass(name: keyof typeof defaultClassNames) {
-    return this.options.classNames?.[name] || defaultClassNames[name];
+  public gotoSlide(index: number) {
+
+    if (!this.items.length || index === this.currentIndex) {
+      return;
+    }
+
+    // スライド遷移の主要ロジック
+    const slidesToShow = this.options.slidesToShow ?? 1;
+    const maxIndex = this.items.length - slidesToShow;
+
+    // ループ処理
+    if (!this.options.loop) {
+      if (index < 0) index = 0;
+      if (index > maxIndex) index = maxIndex;
+    } else {
+      if (index < 0) index = maxIndex;
+      if (index > maxIndex) index = 0;
+    }
+
+    // ARIA属性とアクティブクラスの更新
+    this.items.forEach((item, i) => {
+      const isActive = i >= index && i < index + slidesToShow;
+      item.setAttribute("aria-hidden", isActive ? "false" : "true");
+      item.classList.toggle(this.getClass("active"), isActive);
+      item.removeAttribute("aria-live"); // 常に削除されるようにする
+    });
+
+    this.currentIndex = index;
+    this.updateTrackPosition(); // DOM更新
+    if (this.options.dots) this.renderDots(); // ドットの更新
+    this.updateSlideStatusAnnouncement(); // ステータスアナウンス
+    this.preloadNextSlideImages(); // 次のスライド画像をプリロード
+
+    // ユーザー操作による自動再生の再開/リセット
+    if (this.options.autoplay && !this.isPaused) {
+      this.stopAutoplay();
+      setTimeout(() => {
+        if (!this.isPaused) {
+          this.startAutoplay();
+        }
+      }, 5000);
+    }
   }
 
-  private getSlides() {
-    const slideSelector = "." + this.getClass("slide");
-    return Array.from(
-      this.root.querySelectorAll(slideSelector)
-    ) as HTMLElement[];
+  public startAutoplay() {
+    // 自動再生の開始
+    if (this.isPaused) return;
+    this.stopAutoplay(); // 既存のタイマーをクリア
+
+    const speed = this.shouldReduceMotion() ? 99999999 : (this.options.autoplaySpeed || 3000); // 非常に長い秒数で実質無効化
+
+    this.autoplayTimer = setInterval(() => {
+      this.gotoSlide(this.currentIndex + 1);
+    }, speed);
   }
+
+  public stopAutoplay() {
+    // 自動再生の停止
+    if (this.autoplayTimer) {
+      clearInterval(this.autoplayTimer);
+      this.autoplayTimer = undefined;
+    }
+  }
+
+  public updateSliderSize() {
+    // スライダーサイズの更新（リサイズ時など）
+    if (!this.track || !this.items.length) return;
+    const slidesToShow = this.options.slidesToShow ?? 1;
+    const containerWidth = this.root.clientWidth;
+    const slideWidth = containerWidth / slidesToShow;
+
+    this.items.forEach((item) => (item.style.width = `${slideWidth}px`));
+    this.track.style.width = `${slideWidth * this.items.length}px`;
+    this.updateTrackPosition();
+  }
+
+
+  // 4. プライベートなセットアップメソッド (コンストラクタやinitから呼ばれる初期設定)
+  // -------------------------------------------------------------
 
   private setupTrack() {
+    // トラック要素の準備とスライドアイテムの取得
     let track = this.root.querySelector(
       "." + this.getClass("track")
     ) as HTMLElement | null;
@@ -116,6 +213,7 @@ export class AccessibleSlider {
   }
 
   private setupAria() {
+    // 初期ARIA属性の設定
     this.items.forEach((item, index) => {
       item.setAttribute(
         "aria-label",
@@ -129,14 +227,16 @@ export class AccessibleSlider {
       item.classList.remove(this.getClass("active"));
       item.removeAttribute("aria-live");
     });
+    // 初期のアクティブスライドの設定 (aria-live は gotoSlide で管理されるため、ここでは不要)
     if (this.items.length > 0) {
       this.items[0].setAttribute("aria-hidden", "false");
       this.items[0].classList.add(this.getClass("active"));
-      this.items[0].setAttribute("aria-live", "polite");
+      // this.items[0].setAttribute("aria-live", "polite"); // gotoSlide で管理
     }
   }
 
   private setupNav() {
+    // ナビゲーション（矢印ボタン）の設定
     const nav = this.root.querySelector("." + this.getClass("arrow"));
     if (!nav) return;
     nav.setAttribute(
@@ -170,6 +270,7 @@ export class AccessibleSlider {
   }
 
   private setupDots() {
+    // ドットナビゲーションの設定
     if (!this.options.dots) return;
     let dots = this.root.parentNode?.querySelector(
       "." + this.getClass("dots")
@@ -180,17 +281,21 @@ export class AccessibleSlider {
       this.root.parentNode?.insertBefore(dots, this.root.nextSibling);
     }
     this.dotsContainer = dots;
-    this.renderDots();
+    this.renderDots(); // 初回レンダリングを呼び出す
   }
 
   private setupAutoplay() {
+    // 自動再生関連の初期設定
     if (this.options.autoplay) {
-      this.setupPauseButton();
-      this.startAutoplay();
+      this.setupPauseButton(); // Pauseボタンの準備
+      if (!this.isPaused) { // 初期状態が一時停止でなければ開始
+        this.startAutoplay();
+      }
     }
   }
 
   private setupPauseButton() {
+    // Pause/Playボタンの準備
     const nav = this.root.querySelector("." + this.getClass("arrow"));
     if (!nav) return;
     let pauseBtn = nav.querySelector(
@@ -209,120 +314,189 @@ export class AccessibleSlider {
       );
       nav.appendChild(pauseBtn);
     }
-    pauseBtn.onclick = () => {
-      if (this.isPaused) {
-        this.isPaused = false;
-        this.startAutoplay();
-        pauseBtn!.innerHTML = this.getPauseIcon();
-        pauseBtn!.setAttribute(
-          "aria-label",
-          getLabel("pause", {
-            lang: this.options.lang,
-            override: this.options.labels,
-          })
-        );
-      } else {
-        this.isPaused = true;
-        this.stopAutoplay();
-        pauseBtn!.innerHTML = this.getPlayIcon();
-        pauseBtn!.setAttribute(
-          "aria-label",
-          getLabel("play", {
-            lang: this.options.lang,
-            override: this.options.labels,
-          })
-        );
-      }
-    };
+    this.pauseButton = pauseBtn;
+    this.pauseButton.onclick = () => this.toggleAutoplay();
+  }
+
+
+  // 5. プライベートなヘルパー/ユーティリティメソッド (他のメソッドから呼ばれる補助関数)
+  // -------------------------------------------------------------
+
+  private getClass(name: keyof typeof defaultClassNames) {
+    // クラス名を取得
+    return this.options.classNames?.[name] || defaultClassNames[name];
+  }
+
+  private shouldUseLiveRegion(): boolean {
+    // options.a11y.live が undefined または true の場合に true を返す
+    // false の場合のみ false を返す
+    return this.options.a11y?.live !== false;
+  }
+
+  // Reduced Motion を考慮
+  private shouldReduceMotion(): boolean {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  private getSlides() {
+    // スライド要素のリストを取得
+    const slideSelector = "." + this.getClass("slide");
+    return Array.from(
+      this.root.querySelectorAll(slideSelector)
+    ) as HTMLElement[];
   }
 
   private getPauseIcon() {
+    // PauseアイコンのSVGを取得
     return this.options.icons?.pause || defaultIcons.pause;
   }
+
   private getPlayIcon() {
+    // PlayアイコンのSVGを取得
     return this.options.icons?.play || defaultIcons.play;
   }
 
   private renderDots() {
+    // ドットナビゲーションのレンダリング（状態更新に伴い再描画される）
     if (!this.dotsContainer) return;
     this.dotsContainer.innerHTML = "";
-    this.dotsContainer.setAttribute("role", "tablist");
-    this.items.forEach((item, i) => {
+    this.dotsContainer.setAttribute("role", "group");
+    this.dotsContainer.setAttribute("aria-label", getLabel("dotRegion", {
+      lang: this.options.lang,
+      override: this.options.labels,
+    }));
+
+    const slidesToShow = this.options.slidesToShow ?? 1;
+    const dotCount = Math.max(1, this.items.length - slidesToShow + 1);
+
+    for (let i = 0; i < dotCount; i++) {
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.setAttribute("role", "tab");
+      btn.className = this.getClass("dot");
+      btn.setAttribute("role", "button");
       btn.setAttribute(
         "aria-label",
         getLabel("dot", {
           lang: this.options.lang,
           override: this.options.labels,
-          params: { i: i + 1, total: this.items.length },
+          params: { i: i + 1, total: dotCount },
         })
       );
       btn.setAttribute("tabindex", i === this.currentIndex ? "0" : "-1");
-      btn.setAttribute(
-        "aria-selected",
-        i === this.currentIndex ? "true" : "false"
-      );
+      // btn.setAttribute("aria-selected", i === this.currentIndex ? "true" : "false"); // role="button" なら不要
       btn.textContent = String(i + 1);
       if (i === this.currentIndex) btn.classList.add(this.getClass("active"));
       btn.onclick = () => this.gotoSlide(i);
-      this.dotsContainer!.appendChild(btn);
-    });
-  }
 
-  public updateSliderSize() {
-    if (!this.track || !this.items.length) return;
-    const containerWidth = this.root.clientWidth;
-    this.items.forEach((item) => (item.style.width = containerWidth + "px"));
-    this.track.style.width = containerWidth * this.items.length + "px";
-    this.updateTrackPosition();
+      btn.addEventListener("keydown", (e) => {
+        let newIndex = i;
+        switch (e.key) {
+          case "ArrowLeft": e.preventDefault(); newIndex = (i === 0) ? dotCount - 1 : i - 1; break;
+          case "ArrowRight": e.preventDefault(); newIndex = (i === dotCount - 1) ? 0 : i + 1; break;
+          case "Home": e.preventDefault(); newIndex = 0; break;
+          case "End": e.preventDefault(); newIndex = dotCount - 1; break;
+          case "Enter":
+          case "Space": e.preventDefault(); this.gotoSlide(i); return;
+        }
+
+        if (newIndex !== i) {
+          this.gotoSlide(newIndex);
+          const newActiveDot = this.dotsContainer?.querySelector(
+            `.${this.getClass("dot")}[tabindex="0"]`
+          ) as HTMLButtonElement;
+          if (newActiveDot) {
+            newActiveDot.focus();
+          }
+        }
+      });
+      this.dotsContainer!.appendChild(btn);
+    }
   }
 
   private updateTrackPosition() {
+    // トラックの位置を更新
     if (!this.track) return;
+    const slidesToShow = this.options.slidesToShow ?? 1;
     const containerWidth = this.root.clientWidth;
-    this.track.style.transform = `translateX(-${
-      this.currentIndex * containerWidth
-    }px)`;
+    const slideWidth = containerWidth / slidesToShow;
+    this.track.style.transform = `translateX(-${this.currentIndex * slideWidth}px)`;
   }
 
-  public startAutoplay() {
-    if (this.isPaused) return;
-    this.stopAutoplay();
-    const speed = this.options.autoplaySpeed || 3000;
-    this.autoplayTimer = setInterval(() => {
-      this.gotoSlide(this.currentIndex + 1);
-    }, speed);
-  }
+  private updateSlideStatusAnnouncement() {
+    // スライドの状態をスクリーンリーダーに読み上げさせる
+    if (!this.shouldUseLiveRegion()) return; // a11y.live が false なら何もしない
 
-  public stopAutoplay() {
-    if (this.autoplayTimer) {
-      clearInterval(this.autoplayTimer);
-      this.autoplayTimer = undefined;
+    const statusClassName = this.getClass("status");
+    let statusEl = this.root.querySelector(`.${statusClassName}`) as HTMLElement;
+
+    if (!statusEl) {
+      statusEl = document.createElement('div');
+      statusEl.className = `${statusClassName} sr-only`;
+      statusEl.setAttribute('aria-live', 'polite');
+      statusEl.setAttribute('aria-atomic', 'true');
+      this.root.appendChild(statusEl);
     }
-  }
 
-  public gotoSlide(index: number) {
-    if (!this.options.loop) {
-      if (index < 0 || index >= this.items.length) return;
+    const slidesToShow = this.options.slidesToShow ?? 1;
+    let statusText: string;
+
+    if (slidesToShow === 1) {
+      // slidesToShow が 1 の場合
+      const currentSlideNumber = this.currentIndex + 1;
+      const totalSlides = this.items.length; // 全アイテム数でOK
+      statusText = getLabel("slideStatus", {
+        lang: this.options.lang,
+        override: this.options.labels,
+        params: { current: currentSlideNumber, total: totalSlides },
+      });
     } else {
-      if (index < 0) index = this.items.length - 1;
-      if (index >= this.items.length) index = 0;
+      // slidesToShow が 2 以上の場合
+      const startSlideNumber = this.currentIndex + 1;
+      const endSlideNumber = Math.min(this.currentIndex + slidesToShow, this.items.length);
+      const totalSlides = this.items.length; // 全アイテム数でOK
+      statusText = getLabel("slideRangeStatus", { // 新しいラベルキーを使用
+        lang: this.options.lang,
+        override: this.options.labels,
+        params: { start: startSlideNumber, end: endSlideNumber, total: totalSlides },
+      });
     }
-    this.items.forEach((item, i) => {
-      const isActive = i === index;
-      item.setAttribute("aria-hidden", isActive ? "false" : "true");
-      item.classList.toggle(this.getClass("active"), isActive);
-      if (isActive) item.setAttribute("aria-live", "polite");
-      else item.removeAttribute("aria-live");
-    });
-    this.currentIndex = index;
-    this.updateTrackPosition();
-    if (this.options.dots) this.renderDots();
+
+    statusEl.textContent = statusText;
   }
 
-  public updateOptionsForCurrentBreakpoint() {
+  // 次のスライドの画像をプリロード
+  private preloadNextSlideImages() {
+    // プリロードするスライドの数を調整可能にするか、固定で1つにすることもできます
+    const slidesToPreload = 1;
+
+    for (let j = 0; j < slidesToPreload; j++) {
+      let nextIndex = this.currentIndex + 1 + j;
+      if (this.options.loop) {
+        nextIndex = nextIndex % this.items.length;
+      } else {
+        if (nextIndex >= this.items.length) {
+          continue; // ループしない場合、範囲外はプリロードしない
+        }
+      }
+
+      const nextSlide = this.items[nextIndex];
+      const img = nextSlide?.querySelector('img');
+      if (img && img.dataset.src && !img.complete) { // data-src属性があればそれを読み込み、まだ完了していなければ
+        const tempImg = new Image();
+        tempImg.src = img.dataset.src; // 読み込みを開始
+        // 読み込み完了後に実際のimg要素のsrcを更新する場合はここで行う
+        // tempImg.onload = () => { img.src = img.dataset.src!; };
+      } else if (img && !img.complete) { // src属性に直接画像が設定されていて、まだ完了していなければ
+        // 現在のsrcを再設定することでブラウザのキャッシュを促す
+        const currentSrc = img.src;
+        img.src = ''; // 一度クリア
+        img.src = currentSrc; // 再設定
+      }
+    }
+  }
+
+  private updateOptionsForCurrentBreakpoint() {
+    // ブレイクポイントに基づいてオプションを更新
     if (!this.originalOptions) this.originalOptions = { ...this.options };
     const width = window.innerWidth;
     let matched: number | null = null;
@@ -335,5 +509,52 @@ export class AccessibleSlider {
     }
     this.options = { ...this.originalOptions };
     if (matched !== null) Object.assign(this.options, bps[matched]);
+  }
+
+  private addKeyboardNavigation() {
+    // スライダー全体のキーボードナビゲーション
+    this.root.addEventListener("keydown", (e) => {
+      switch (e.key) {
+        case "ArrowLeft": e.preventDefault(); this.gotoSlide(this.currentIndex - 1); break;
+        case "ArrowRight": e.preventDefault(); this.gotoSlide(this.currentIndex + 1); break;
+        case "Home": e.preventDefault(); this.gotoSlide(0); break;
+        case "End": e.preventDefault(); const slidesToShow = this.options.slidesToShow ?? 1; this.gotoSlide(this.items.length - slidesToShow); break;
+        case "Space":
+          if (e.target === this.pauseButton) {
+            e.preventDefault();
+            this.toggleAutoplay();
+          }
+          break;
+      }
+    });
+  }
+
+  private toggleAutoplay() {
+    // 自動再生の一時停止/再生の切り替え
+    if (!this.pauseButton) return;
+
+    if (this.isPaused) {
+      this.isPaused = false;
+      this.startAutoplay();
+      this.pauseButton.innerHTML = this.getPauseIcon();
+      this.pauseButton.setAttribute(
+        "aria-label",
+        getLabel("pause", {
+          lang: this.options.lang,
+          override: this.options.labels,
+        })
+      );
+    } else {
+      this.isPaused = true;
+      this.stopAutoplay();
+      this.pauseButton.innerHTML = this.getPlayIcon();
+      this.pauseButton.setAttribute(
+        "aria-label",
+        getLabel("play", {
+          lang: this.options.lang,
+          override: this.options.labels,
+        })
+      );
+    }
   }
 }

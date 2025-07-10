@@ -7,6 +7,7 @@ export const defaultClassNames = {
   dot: "a11y-slider__dot",
   active: "is-active",
   pause: "a11y-slider__pause",
+  status: "a11y-slider-status",
 };
 
 export const defaultLabels = {
@@ -19,6 +20,10 @@ export const defaultLabels = {
     next: "次のスライド",
     region: "スライダー",
     buttonRegion: "スライダー操作",
+    regionLabel: "画像カルーセル",
+    dotRegion: "スライドページネーション",
+    slideStatus: "{current}枚目のスライドが表示されました", // slidesToShow: 1 の場合
+    slideRangeStatus: "{start}枚目から{end}枚目のスライドが表示されました", // slidesToShow: 2 以上の場合
   },
   en: {
     slide: "Slide {i} of {total}",
@@ -29,6 +34,10 @@ export const defaultLabels = {
     next: "Next",
     region: "Slider",
     buttonRegion: "Slider Controls",
+    regionLabel: "Image Carousel",
+    dotRegion: "Slide Pagination",
+    slideStatus: "Slide {current} of {total} is displayed",
+    slideRangeStatus: "Slides {start} to {end} of {total} are displayed",
   },
 };
 
